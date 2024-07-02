@@ -1,0 +1,124 @@
+pipeline {
+    agent any
+    environment {
+        GIT_TOKEN = credentials('GIT_TOKEN')
+        API_URL = ''
+        BASE_URL = ''
+    }
+    stages {
+        stage('Get Code') {
+            steps {
+                echo 'Download git repository'
+
+                git branch: 'master', url: 'https://${GIT_TOKEN}@github.com/macunagutierrez/todo-list-aws.git'
+                echo WORKSPACE
+                sh 'dir'
+            }
+            
+        }
+
+        stage('STATIC') {
+               
+               steps {
+                catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+                   sh '''
+                       whoami
+                       hostname
+                       echo ${WORKSPACE}
+                       ls
+                       flake8 --format=pylint --exit-zero src >flake8.out
+                   '''
+                   recordIssues tools: [flake8(name: 'Flake8', pattern: 'flake8.out')]
+                }
+               }
+        }
+        stage('SECURITY Test') {
+            steps {
+                catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+                sh '''
+                    whoami
+                    hostname
+                    echo ${WORKSPACE}
+                    bandit --exit-zero -r . -f custom -o bandit.out --severity-level medium --msg-template "{abspath}:{line}: [{test_id}] {msg}"
+                '''
+                recordIssues tools: [pyLint(name: 'Bandit', pattern: 'bandit.out')]
+                }
+            }
+        }
+        stage('DEPLOY') {
+          steps {
+              sh '''
+              ls
+              sam build
+              sam deploy --stack-name todo-list-aws-3 --region us-east-1 --s3-bucket aws-sam-cli-managed-default-samclisourcebucket-tsa4u9fez1gg --s3-prefix todo-list-aws --capabilities CAPABILITY_IAM --parameter-overrides Stage=staging --no-fail-on-empty-changeset
+              '''
+          }
+                     
+        }
+         stage('GET API') {
+           steps {
+              script {
+                    // Capture the base URL of the deployed API Gateway
+                    BASE_URL = sh(script: """
+                        aws cloudformation describe-stacks --stack-name todo-list-aws-3 --query "Stacks[0].Outputs[0].OutputValue" --output text
+                    """, returnStdout: true).trim()
+                    // Set the environment variable for use in other stages
+                    API_URL = BASE_URL
+                    env.API_URL = API_URL
+                    echo "The API Gateway URL is: ${API_URL}"
+                }
+          }
+                     
+        }
+        stage('Test curl') {
+            steps {
+                script {
+                    // Define the expected response
+                    def expectedResponse = '{"message":"success"}' // Adjust this to the expected response content
+
+                    // Execute the curl command and capture the response
+                    def response = sh(script: """
+                        curl --location '${API_URL}/todos' \\
+                             --header 'Content-Type: application/json' \\
+                             --data '{ "text": "UNIR APARTADO C ELEMENTO2" }'
+                    """, returnStdout: true).trim()
+                    
+                    // Print the response
+                    echo "Response:\n${response}"
+                    def jsonResponse = new groovy.json.JsonSlurper().parseText(response)
+                      // Verify the response
+                    if (jsonResponse.statusCode != 200) {
+                        error("Unexpected statusCode: ${jsonResponse.statusCode}")
+                    }
+                }
+            }
+        }
+        stage('PYTEST stage') {
+            steps {
+               sh '''
+                set PYTHONPATH=%WORKSPACE%
+                pytest -s --junitxml=result-rest.xml test/integration/todoApiTest.py
+                '''
+                junit 'result*.xml'
+            }
+        }
+
+         stage('Merge to Master') {
+            when {
+                // Definir una condición para realizar el merge, como por ejemplo, solo en la rama de desarrollo
+                branch 'develop'
+            }
+            steps {
+                script {
+                    // Merge a la rama master usando git
+                    sh 'git checkout master'
+                    sh 'git merge --no-ff origin/develop -m "Merge branch develop to master"'
+                    
+                    sh 'git push origin master'
+                }
+            }
+        }
+        
+       
+    }
+}
