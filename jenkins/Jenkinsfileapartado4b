@@ -23,7 +23,7 @@ pipeline {
               sh '''
               ls
               sam build
-              sam deploy --config-env production
+              sam deploy --config-env production --no-fail-on-empty-changeset
               '''
           }
                      
