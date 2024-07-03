@@ -1,0 +1,75 @@
+pipeline {
+    agent any
+    environment {
+        GIT_TOKEN = credentials('GIT_TOKEN')
+        API_URL = ''
+        BASE_URL = ''
+    }
+    stages {
+        stage('Get Code') {
+            steps {
+                echo 'Download git repository'
+
+                git branch: 'master', url: 'https://${GIT_TOKEN}@github.com/macunagutierrez/todo-list-aws.git'
+                echo WORKSPACE
+                sh 'dir'
+            }
+            
+        }
+
+        stage('DEPLOY') {
+          steps {
+              sh '''
+              ls
+              sam build
+              sam deploy --stack-name todo-list-aws-production --region us-east-1 --s3-bucket aws-sam-cli-managed-default-samclisourcebucket-tsa4u9fez1gg --s3-prefix todo-list-aws --capabilities CAPABILITY_IAM --parameter-overrides Stage=production --no-fail-on-empty-changeset
+              '''
+          }
+                     
+        }
+         stage('GET API') {
+           steps {
+              script {
+                    BASE_URL = sh(script: """
+                        aws cloudformation describe-stacks --stack-name todo-list-aws-production --query "Stacks[0].Outputs[0].OutputValue" --output text
+                    """, returnStdout: true).trim()
+                    API_URL = BASE_URL
+                    env.API_URL = API_URL
+                    echo "The API Gateway URL is: ${API_URL}"
+                }
+          }
+                     
+        }
+        stage('Test curl') {
+            steps {
+                script {
+    
+                    def response = sh(script: """
+                        curl --location '${API_URL}/todos' \\
+                             --header 'Content-Type: application/json' \\
+                             --data '{ "text": "UNIR APARTADO C ELEMENTO2" }'
+                    """, returnStdout: true).trim()
+                    
+                    echo "Response:\n${response}"
+                    def jsonResponse = new groovy.json.JsonSlurper().parseText(response)
+                    if (jsonResponse.statusCode != 200) {
+                        error("Unexpected statusCode: ${jsonResponse.statusCode}")
+                    }
+                     echo "json:\n${jsonResponse}"
+                
+                }
+            }
+        }
+        stage('PYTEST stage') {
+            steps {
+               sh '''
+                set PYTHONPATH=%WORKSPACE%
+                pytest -s --junitxml=result-rest.xml test/integration/todoApiTest.py
+                '''
+                junit 'result*.xml'
+            }
+        }
+        
+       
+    }
+}
