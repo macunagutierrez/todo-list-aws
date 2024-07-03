@@ -91,12 +91,13 @@ pipeline {
         }
         stage('PYTEST stage') {
             steps {
+             withEnv(["BASE_URL=${BASE_URL}"]) {
                sh '''
-                export BASE_URL=${BASE_URL}
                 set PYTHONPATH=%WORKSPACE%
-                BASE_URL=${BASE_URL} pytest -s --junitxml=result-rest.xml test/integration/todoApiTest.py
+                pytest -s --junitxml=result-rest.xml test/integration/todoApiTest.py
                 '''
                 junit 'result*.xml'
+                }
             }
         }
 
